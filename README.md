@@ -35,8 +35,8 @@ Siga estes passos para configurar e rodar o projeto localmente.
 
 ```bash
 # Clone este repositório para sua máquina local
-git clone <URL_DO_SEU_REPOSITORIO>
-cd <NOME_DO_DIRETORIO>
+git clone https://github.com/henriSandovalSilva/mailbox-manager.git
+cd mailbox-manager
 ```
 
 ### 2\. Instalar Dependências
