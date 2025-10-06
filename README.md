@@ -79,7 +79,7 @@ As credenciais e configurações sensíveis são gerenciadas através de um arqu
     SUPABASE_KEY=SUA_CHAVE_SERVICE_ROLE
     ```
 
-    > **Importante:** Para o backend, use a chave **`service_role`** (encontrada na mesma seção "Project API keys"), pois ela tem as permissões necessárias para operar no banco de dados, ignorando as políticas de RLS.
+    > **Importante:** Para o backend, use a chave **`service_role`** (encontrada em Project Settings -> API Keys -> service_role (secret)), pois ela tem as permissões necessárias para operar no banco de dados, ignorando as políticas de RLS.
 
 ## ▶️ Executando a Aplicação
 
@@ -99,12 +99,12 @@ O serviço agora está rodando em segundo plano.
     pm2 list
     ```
 
-    *(Inicialmente, você verá apenas `email-manager-api`. Os workers aparecerão aqui à medida que você os adicionar via API.)*
+    *(Inicialmente, você verá apenas `mailbox-manager-api`. Os workers aparecerão aqui à medida que você os adicionar via API.)*
 
   - **Visualizar logs em tempo real:**
 
     ```bash
-    pm2 logs email-manager-api
+    pm2 logs
     ```
 
   - **Monitorar uso de CPU e Memória:**
@@ -116,13 +116,13 @@ O serviço agora está rodando em segundo plano.
   - **Parar o serviço:**
 
     ```bash
-    pm2 stop email-manager-api
+    pm2 stop mailbox-manager-api
     ```
 
   - **Reiniciar o serviço:**
 
     ```bash
-    pm2 restart email-manager-api
+    pm2 restart mailbox-manager-api
     ```
 
 ## 🚀 Documentação da API
