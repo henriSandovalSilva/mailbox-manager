@@ -1,0 +1,21 @@
+{
+  "name": "mailbox-manager",
+  "version": "1.0.0",
+  "main": "api.js",
+  "scripts": {
+    "start": "pm2 start api.js --name=\"mailbox-manager-api\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.74.0",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "mailparser": "^3.7.4",
+    "node-imap": "^0.9.6",
+    "nodemailer": "^7.0.7",
+    "pm2": "^6.0.13"
+  }
+}
