@@ -226,7 +226,7 @@ app.get('/api/mailboxes/:mailboxId/emails', async (req, res) => {
 });
 
 app.post('/api/send', async (req, res) => {
-  const { from, to, subject, text, html } = req.body;
+  const { from, to, subject, text, html, requestReadReceipt } = req.body;
 
   if (!from || !to || !subject || (!text && !html)) {
     return res.status(400).json({ error: 'Os campos "from", "to", "subject" e ("text" ou "html") são obrigatórios.' });
@@ -259,10 +259,13 @@ app.post('/api/send', async (req, res) => {
       subject: subject,
       text: text,
       html: html,
-      headers: {
-        'Disposition-Notification-To': from
-      }
     };
+
+    if (requestReadReceipt === true) {
+      mailOptions.headers = {
+        'Disposition-Notification-To': from
+      };
+    }
 
     const info = await transporter.sendMail(mailOptions);
 
