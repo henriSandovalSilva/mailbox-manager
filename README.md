@@ -164,7 +164,8 @@ Todos os endpoints rodam na porta definida no seu arquivo `.env` (padrão: `3000
           "to": "destinatario@exemplo.com",
           "subject": "Assunto do E-mail",
           "text": "Corpo do e-mail em texto puro.",
-          "html": "<p>Corpo do e-mail em <b>HTML</b>.</p>"
+          "html": "<p>Corpo do e-mail em <b>HTML</b>.</p>",
+          "requestReadReceipt": true
         }
         ```
 
