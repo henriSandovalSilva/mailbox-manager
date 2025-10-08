@@ -137,7 +137,7 @@ app.post('/api/mailboxes', async (req, res) => {
   try {
     const { email, imap_host, imap_port, imap_user, imap_pass, imap_tls, smtp_host, smtp_port, smtp_user, smtp_pass, smtp_secure } = req.body;
 
-    if (!email || !imap_host || !imap_port || !imap_user || !imap_pass || !imap_tls || !smtp_host || !smtp_port || !smtp_user || !smtp_pass || !smtp_secure) {
+    if (!email || !imap_host || !imap_port || !imap_user || !imap_pass || (imap_tls !== true && imap_tls !== false) || !smtp_host || !smtp_port || !smtp_user || !smtp_pass || (smtp_secure !== true && smtp_secure !== false)) {
       return res.status(400).json({ error: 'Todos os campos são obrigatórios.' });
     }
 
