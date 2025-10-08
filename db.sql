@@ -11,6 +11,7 @@ CREATE TABLE mailboxes (
   smtp_port INT DEFAULT 465,
   smtp_user TEXT NOT NULL,
   smtp_pass TEXT NOT NULL,
+  smtp_secure BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -26,6 +27,7 @@ CREATE TABLE emails (
   body_html TEXT,
   received_at TIMESTAMPTZ,
   raw_headers JSONB,
+  original_from TEXT,
   has_attachments BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );

@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "main": "api.js",
   "scripts": {
-    "start": "pm2 start api.js --name=\"mailbox-manager-api\""
+    "start": "pm2 start api.js --name=\"mailbox-manager-api\"",
+    "start:prod": "pm2-runtime start api.js --name=\"mailbox-manager-api\""
   },
   "keywords": [],
   "author": "",
@@ -11,6 +12,7 @@
   "description": "",
   "dependencies": {
     "@supabase/supabase-js": "^2.74.0",
+    "axios": "^1.12.2",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "mailparser": "^3.7.4",

@@ -35,8 +35,8 @@ Siga estes passos para configurar e rodar o projeto localmente.
 
 ```bash
 # Clone este repositório para sua máquina local
-git clone https://github.com/henriSandovalSilva/mailbox-manager.git
-cd mailbox-manager
+git clone <URL_DO_SEU_REPOSITORIO>
+cd <NOME_DO_DIRETORIO>
 ```
 
 ### 2\. Instalar Dependências
@@ -137,11 +137,15 @@ Todos os endpoints rodam na porta definida no seu arquivo `.env` (padrão: `3000
         {
           "email": "teste@provedor.com",
           "imap_host": "imap.provedor.com",
+          "imap_port": 993,
           "imap_user": "teste@provedor.com",
           "imap_pass": "senha123",
+          "imap_tls": true,
           "smtp_host": "smtp.provedor.com",
+          "smtp_port": 465,
           "smtp_user": "teste@provedor.com",
-          "smtp_pass": "senha123"
+          "smtp_pass": "senha123",
+          "smtp_secure": true
         }
         ```
   - **`GET /api/mailboxes`** - Lista todas as caixas de e-mail configuradas.

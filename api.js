@@ -3,6 +3,7 @@ const express = require('express');
 const pm2 = require('pm2');
 const nodemailer = require('nodemailer');
 const supabase = require('./supabase.js');
+const Imap = require('node-imap');
 
 const app = express();
 app.use(express.json());
@@ -55,6 +56,56 @@ function stopPm2Worker(mailboxId) {
   });
 }
 
+function validateImapCredentials(config) {
+  return new Promise((resolve, reject) => {
+    const imap = new Imap({
+      user: config.imap_user,
+      password: config.imap_pass,
+      host: config.imap_host,
+      port: config.imap_port,
+      tls: config.imap_tls,
+    });
+
+    const onError = (err) => {
+      imap.removeListener('ready', onReady);
+      reject(new Error(`Falha na validação IMAP: ${err.message}`));
+    };
+
+    const onReady = () => {
+      imap.removeListener('error', onError);
+      imap.end();
+      resolve(true);
+    };
+
+    imap.once('ready', onReady);
+    imap.once('error', onError);
+
+    imap.connect();
+  });
+}
+
+function validateSmtpCredentials(config) {
+  return new Promise((resolve, reject) => {
+    const transporter = nodemailer.createTransport({
+      host: config.smtp_host,
+      port: config.smtp_port,
+      secure: config.smtp_secure,
+      auth: {
+        user: config.smtp_user,
+        pass: config.smtp_pass,
+      },
+    });
+
+    transporter.verify((error, success) => {
+      if (error) {
+        reject(new Error(`Falha na validação SMTP: ${error.message}`));
+      } else {
+        resolve(true);
+      }
+    });
+  });
+}
+
 app.get('/health/live', (req, res) => {
   res.status(200).json({ status: 'alive' });
 });
@@ -84,12 +135,21 @@ app.get('/api/mailboxes', async (req, res) => {
 
 app.post('/api/mailboxes', async (req, res) => {
   try {
-    const { email, imap_host, imap_user, imap_pass, smtp_host, smtp_user, smtp_pass } = req.body;
+    const { email, imap_host, imap_port, imap_user, imap_pass, imap_tls, smtp_host, smtp_port, smtp_user, smtp_pass, smtp_secure } = req.body;
 
-    if (!email || !imap_host || !imap_user || !imap_pass || !smtp_host || !smtp_user || !smtp_pass) {
+    if (!email || !imap_host || !imap_port || !imap_user || !imap_pass || !imap_tls || !smtp_host || !smtp_port || !smtp_user || !smtp_pass || !smtp_secure) {
       return res.status(400).json({ error: 'Todos os campos são obrigatórios.' });
     }
 
+    console.log(`[VALIDAÇÃO] Testando credenciais IMAP para ${email}...`);
+    await validateImapCredentials(req.body);
+    console.log(`[VALIDAÇÃO] Credenciais IMAP para ${email} são válidas.`);
+
+    console.log(`[VALIDAÇÃO] Testando credenciais SMTP para ${email}...`);
+    await validateSmtpCredentials(req.body);
+    console.log(`[VALIDAÇÃO] Credenciais SMTP para ${email} são válidas.`);
+
+    console.log(`[INFO] Credenciais validadas. Inserindo mailbox ${email} no banco de dados...`);
     const { data, error } = await supabase
       .from('mailboxes')
       .insert([req.body])
@@ -98,14 +158,23 @@ app.post('/api/mailboxes', async (req, res) => {
 
     if (error) throw error;
 
+    console.log(`[INFO] Mailbox ${email} inserida com sucesso. Iniciando worker...`);
     await startPm2Worker(data);
 
-    res.status(201).json({ message: 'Mailbox adicionada com sucesso!', data });
+    res.status(201).json({ message: 'Mailbox adicionada e validada com sucesso!', data });
+
   } catch (error) {
     if (error.code === '23505') {
       return res.status(409).json({ error: 'Este e-mail já está cadastrado.', details: error.message });
     }
-    res.status(500).json({ error: 'Erro ao adicionar mailbox', details: error.message });
+
+    if (error.message.includes('Falha na validação')) {
+      console.error(`[VALIDAÇÃO] Erro: ${error.message}`);
+      return res.status(400).json({ error: 'Credenciais inválidas.', details: error.message });
+    }
+
+    console.error(`[ERRO GERAL] Falha ao adicionar mailbox: ${error.message}`);
+    res.status(500).json({ error: 'Erro interno ao adicionar mailbox', details: error.message });
   }
 });
 
@@ -125,82 +194,85 @@ app.delete('/api/mailboxes/:id', async (req, res) => {
 });
 
 app.get('/api/mailboxes/:mailboxId/emails', async (req, res) => {
-    const { mailboxId } = req.params;
+  const { mailboxId } = req.params;
 
-    const page = parseInt(req.query.page, 10) || 1;
-    const limit = parseInt(req.query.limit, 10) || 20;
-    const offset = (page - 1) * limit;
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 20;
+  const offset = (page - 1) * limit;
 
-    try {
-        const { data, error, count } = await supabase
-            .from('emails')
-            .select('*', { count: 'exact' })
-            .eq('mailbox_id', mailboxId)
-            .order('received_at', { ascending: false })
-            .range(offset, offset + limit - 1);
+  try {
+    const { data, error, count } = await supabase
+      .from('emails')
+      .select('*', { count: 'exact' })
+      .eq('mailbox_id', mailboxId)
+      .order('received_at', { ascending: false })
+      .range(offset, offset + limit - 1);
 
-        if (error) throw error;
-        
-        res.json({
-            data,
-            pagination: {
-                totalItems: count,
-                totalPages: Math.ceil(count / limit),
-                currentPage: page,
-                limit: limit
-            }
-        });
+    if (error) throw error;
 
-    } catch (error) {
-        res.status(500).json({ error: `Erro ao buscar e-mails para a mailbox ${mailboxId}`, details: error.message });
-    }
+    res.json({
+      data,
+      pagination: {
+        totalItems: count,
+        totalPages: Math.ceil(count / limit),
+        currentPage: page,
+        limit: limit
+      }
+    });
+
+  } catch (error) {
+    res.status(500).json({ error: `Erro ao buscar e-mails para a mailbox ${mailboxId}`, details: error.message });
+  }
 });
 
 app.post('/api/send', async (req, res) => {
-    const { from, to, subject, text, html } = req.body;
+  const { from, to, subject, text, html } = req.body;
 
-    if (!from || !to || !subject || (!text && !html)) {
-        return res.status(400).json({ error: 'Os campos "from", "to", "subject" e ("text" ou "html") são obrigatórios.' });
+  if (!from || !to || !subject || (!text && !html)) {
+    return res.status(400).json({ error: 'Os campos "from", "to", "subject" e ("text" ou "html") são obrigatórios.' });
+  }
+
+  try {
+    const { data: mailbox, error: dbError } = await supabase
+      .from('mailboxes')
+      .select('smtp_host, smtp_port, smtp_user, smtp_pass')
+      .eq('email', from)
+      .single();
+
+    if (dbError || !mailbox) {
+      return res.status(404).json({ error: `Mailbox de origem "${from}" não encontrada ou não configurada para envio.` });
     }
 
-    try {
-        const { data: mailbox, error: dbError } = await supabase
-            .from('mailboxes')
-            .select('smtp_host, smtp_port, smtp_user, smtp_pass')
-            .eq('email', from)
-            .single();
+    const transporter = nodemailer.createTransport({
+      host: mailbox.smtp_host,
+      port: mailbox.smtp_port || 465,
+      secure: (mailbox.smtp_port || 465) === 465,
+      auth: {
+        user: mailbox.smtp_user,
+        pass: mailbox.smtp_pass,
+      },
+    });
 
-        if (dbError || !mailbox) {
-            return res.status(404).json({ error: `Mailbox de origem "${from}" não encontrada ou não configurada para envio.` });
-        }
+    const mailOptions = {
+      from: from,
+      to: to,
+      subject: subject,
+      text: text,
+      html: html,
+      headers: {
+        'Disposition-Notification-To': from
+      }
+    };
 
-        const transporter = nodemailer.createTransport({
-            host: mailbox.smtp_host,
-            port: mailbox.smtp_port || 465,
-            secure: (mailbox.smtp_port || 465) === 465,
-            auth: {
-                user: mailbox.smtp_user,
-                pass: mailbox.smtp_pass,
-            },
-        });
+    const info = await transporter.sendMail(mailOptions);
 
-        const mailOptions = {
-            from: from,
-            to: to,
-            subject: subject,
-            text: text,
-            html: html,
-        };
+    console.log(`E-mail enviado: ${info.messageId}`);
+    res.status(202).json({ success: true, message: 'E-mail enviado para a fila de processamento.', messageId: info.messageId });
 
-        const info = await transporter.sendMail(mailOptions);
-        
-        console.log(`E-mail enviado: ${info.messageId}`);
-        res.status(202).json({ success: true, message: 'E-mail enviado para a fila de processamento.', messageId: info.messageId });
-
-    } catch (error) {
-        console.error('Erro ao enviar e-mail:', error);
-        res.status(500).json({ success: false, error: 'Falha ao enviar o e-mail.', details: error.message });
-    }
+  } catch (error) {
+    console.error('Erro ao enviar e-mail:', error);
+    res.status(500).json({ success: false, error: 'Falha ao enviar o e-mail.', details: error.message });
+  }
 });
 
 async function syncWorkersOnStartup() {
