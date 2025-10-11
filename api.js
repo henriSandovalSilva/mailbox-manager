@@ -59,11 +59,11 @@ function stopPm2Worker(mailboxId) {
 function validateImapCredentials(config) {
   return new Promise((resolve, reject) => {
     const imap = new Imap({
-      user: config.imap_user,
-      password: config.imap_pass,
+      user: config.email,
+      password: config.password,
       host: config.imap_host,
       port: config.imap_port,
-      tls: config.imap_tls,
+      tls: config.imap_secure,
     });
 
     const onError = (err) => {
@@ -91,8 +91,8 @@ function validateSmtpCredentials(config) {
       port: config.smtp_port,
       secure: config.smtp_secure,
       auth: {
-        user: config.smtp_user,
-        pass: config.smtp_pass,
+        user: config.email,
+        pass: config.password,
       },
     });
 
@@ -110,21 +110,36 @@ app.get('/health/live', (req, res) => {
   res.status(200).json({ status: 'alive' });
 });
 
-app.get('/health/ready', async (req, res) => {
+app.get('/health/:email', async (req, res) => {
+  const { email } = req.params;
+
   try {
-    const { error } = await supabase.from('mailboxes').select('id').limit(1);
+    const { data: mailData } = await supabase.from('mailboxes').select('id').eq('email', email).single();
+
+    const { data, error } = await supabase.from('mailbox_sync_status').select('last_synced_at').eq('mailbox_id', mailData.id).single();
+    
     if (error) throw error;
-    res.status(200).json({ status: 'ready', dependencies: { database: 'ok' } });
+
+    const lastSyncedAt = data.last_synced_at || null;
+    const now = Date.now();
+    const syncedTime = lastSyncedAt ? new Date(lastSyncedAt).getTime() : 0;
+    const fiveMinutes = 5 * 60 * 1000;
+
+    if (lastSyncedAt && (now - syncedTime <= fiveMinutes)) {
+      res.status(200).json({ status: 'ready', last_synced_at: lastSyncedAt });
+    } else {
+      res.status(200).json({ status: 'not_ready', last_synced_at: lastSyncedAt });
+    }
   } catch (error) {
     res.status(503).json({ status: 'not_ready', dependencies: { database: 'error', details: error.message } });
   }
 });
 
-app.get('/api/mailboxes', async (req, res) => {
+app.get('/api/mailboxes', async (req, res) => { 
   try {
     const { data, error } = await supabase
       .from('mailboxes')
-      .select('id, email, is_active, imap_host, smtp_host, created_at');
+      .select('id, email, active, imap_host, smtp_host, created_at');
 
     if (error) throw error;
     res.json(data);
@@ -135,9 +150,9 @@ app.get('/api/mailboxes', async (req, res) => {
 
 app.post('/api/mailboxes', async (req, res) => {
   try {
-    const { email, imap_host, imap_port, imap_user, imap_pass, imap_tls, smtp_host, smtp_port, smtp_user, smtp_pass, smtp_secure } = req.body;
+    const { email, password, imap_host, imap_port, smtp_host, smtp_port, smtp_secure, imap_secure } = req.body;
 
-    if (!email || !imap_host || !imap_port || !imap_user || !imap_pass || (imap_tls !== true && imap_tls !== false) || !smtp_host || !smtp_port || !smtp_user || !smtp_pass || (smtp_secure !== true && smtp_secure !== false)) {
+    if (!email || !password || !imap_host || !imap_port || (imap_secure !== true && imap_secure !== false) || !smtp_host || !smtp_port || (smtp_secure !== true && smtp_secure !== false)) {
       return res.status(400).json({ error: 'Todos os campos são obrigatórios.' });
     }
 
@@ -178,12 +193,15 @@ app.post('/api/mailboxes', async (req, res) => {
   }
 });
 
-app.delete('/api/mailboxes/:id', async (req, res) => {
-  const { id } = req.params;
-  try {
-    await stopPm2Worker(id);
+app.delete('/api/mailboxes/:email', async (req, res) => {
+  const { email } = req.params;
 
-    const { error } = await supabase.from('mailboxes').delete().eq('id', id);
+  try {
+    const { data } = await supabase.from('mailboxes').select('id').eq('email', email).single();
+
+    await stopPm2Worker(data.id);
+
+    const { error } = await supabase.from('mailboxes').delete().eq('email', email);
 
     if (error) throw error;
 
@@ -193,18 +211,20 @@ app.delete('/api/mailboxes/:id', async (req, res) => {
   }
 });
 
-app.get('/api/mailboxes/:mailboxId/emails', async (req, res) => {
-  const { mailboxId } = req.params;
+app.get('/api/mailboxes/:email/emails', async (req, res) => {
+  const { email } = req.params;
 
   const page = parseInt(req.query.page, 10) || 1;
   const limit = parseInt(req.query.limit, 10) || 20;
   const offset = (page - 1) * limit;
 
   try {
+    const { data: mailData } = await supabase.from('mailboxes').select('id').eq('email', email).single();
+
     const { data, error, count } = await supabase
       .from('emails')
       .select('*', { count: 'exact' })
-      .eq('mailbox_id', mailboxId)
+      .eq('mailbox_id', mailData.id)
       .order('received_at', { ascending: false })
       .range(offset, offset + limit - 1);
 
@@ -221,7 +241,7 @@ app.get('/api/mailboxes/:mailboxId/emails', async (req, res) => {
     });
 
   } catch (error) {
-    res.status(500).json({ error: `Erro ao buscar e-mails para a mailbox ${mailboxId}`, details: error.message });
+    res.status(500).json({ error: `Erro ao buscar e-mails para a mailbox ${email}`, details: error.message });
   }
 });
 
@@ -235,7 +255,7 @@ app.post('/api/send', async (req, res) => {
   try {
     const { data: mailbox, error: dbError } = await supabase
       .from('mailboxes')
-      .select('smtp_host, smtp_port, smtp_user, smtp_pass')
+      .select('email, smtp_host, smtp_port, password')
       .eq('email', from)
       .single();
 
@@ -248,8 +268,8 @@ app.post('/api/send', async (req, res) => {
       port: mailbox.smtp_port || 465,
       secure: (mailbox.smtp_port || 465) === 465,
       auth: {
-        user: mailbox.smtp_user,
-        pass: mailbox.smtp_pass,
+        user: mailbox.email,
+        pass: mailbox.password,
       },
     });
 
@@ -284,7 +304,7 @@ async function syncWorkersOnStartup() {
     const { data: mailboxes, error } = await supabase
       .from('mailboxes')
       .select('*')
-      .eq('is_active', true);
+      .eq('active', true);
 
     if (error) throw error;
 

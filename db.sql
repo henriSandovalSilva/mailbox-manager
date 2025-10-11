@@ -1,17 +1,14 @@
 CREATE TABLE mailboxes (
   id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   email TEXT NOT NULL UNIQUE,
-  is_active BOOLEAN DEFAULT TRUE,
+  password TEXT NOT NULL,
   imap_host TEXT NOT NULL,
   imap_port INT DEFAULT 993,
-  imap_user TEXT NOT NULL,
-  imap_pass TEXT NOT NULL,
-  imap_tls BOOLEAN DEFAULT TRUE,
   smtp_host TEXT NOT NULL,
   smtp_port INT DEFAULT 465,
-  smtp_user TEXT NOT NULL,
-  smtp_pass TEXT NOT NULL,
   smtp_secure BOOLEAN DEFAULT TRUE,
+  imap_secure BOOLEAN DEFAULT TRUE,
+  active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 

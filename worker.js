@@ -77,7 +77,7 @@ async function initializeState() {
   } else {
     const { data: newStatus, error: insertError } = await supabase
       .from('mailbox_sync_status')
-      .insert({ mailbox_id: mailboxId, last_processed_uid: 0 })
+      .insert({ mailbox_id: mailboxId, last_processed_uid: 0, last_synced_at: new Date().toISOString() })
       .select()
       .single();
     if (insertError) {
@@ -103,6 +103,19 @@ async function updateLastProcessedUID(uid) {
   }
 }
 
+async function updateLastSyncedAt() {
+  syncStatus.last_synced_at = new Date().toISOString();
+
+  const { error } = await supabase
+    .from('mailbox_sync_status')
+    .update({ last_synced_at: syncStatus.last_synced_at })
+    .eq('mailbox_id', mailboxId);
+
+  if (error) {
+    log('ERROR', `Falha ao atualizar a última sincronização no banco.`, { error });
+  }
+}
+
 function connect() {
   if (imapConnection && imapConnection.state !== 'disconnected') {
     log('WARN', 'Tentativa de conectar enquanto já existe uma conexão ativa ou em andamento.');
@@ -111,11 +124,11 @@ function connect() {
 
   log('INFO', `Conectando ao servidor IMAP ${mailboxCredentials.imap_host}...`);
   imapConnection = new Imap({
-    user: mailboxCredentials.imap_user,
-    password: mailboxCredentials.imap_pass,
+    user: mailboxCredentials.email,
+    password: mailboxCredentials.password,
     host: mailboxCredentials.imap_host,
     port: mailboxCredentials.imap_port || 993,
-    tls: mailboxCredentials.imap_tls !== false,
+    tls: mailboxCredentials.imap_secure,
   });
 
   imapConnection.once('ready', handleReady);
@@ -179,7 +192,7 @@ function handleReady() {
   });
 }
 
-function syncMissingEmails() {
+async function syncMissingEmails() {
   if (!syncStatus || !syncStatus.initial_sync_completed_at) {
     log('WARN', 'Tentativa de sincronizar antes da configuração inicial ser concluída.');
     return;
@@ -187,6 +200,8 @@ function syncMissingEmails() {
 
   const lastUID = syncStatus.last_processed_uid;
   log('INFO', `Iniciando sincronização de e-mails a partir do UID > ${lastUID}`);
+
+  await updateLastSyncedAt();
 
   const searchCriteria = ['UID', `${lastUID + 1}:*`];
 
