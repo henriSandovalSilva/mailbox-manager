@@ -27,27 +27,46 @@ function log(level, message, details) {
   console.log(JSON.stringify(logObject));
 }
 
-async function sendToWebhook(emailData) {
+async function sendToWebhook(parsedEmail) {
   const webhookUrl = process.env.WEBHOOK_URL;
+
   if (!webhookUrl) {
     log('INFO', 'Webhook URL não configurada no .env, pulando notificação.');
     return;
   }
 
+  let originalFrom = null;
+
+  if (parsedEmail.headers.has('return-path')) {
+    const rawReturnPath = parsedEmail.headers.get('return-path');
+
+    if (rawReturnPath && rawReturnPath.value && rawReturnPath.value[0] && rawReturnPath.value[0].address) {
+      originalFrom = rawReturnPath.value[0].address;
+    }
+  }
+
+  const { data: mailData } = await supabase.from('mailboxes').select('email').eq('id', mailboxId).single();
+
   try {
-    log('INFO', `Enviando notificação para o webhook para o e-mail UID ${emailData.uid}...`);
+    log('INFO', `Enviando notificação para o webhook para o e-mail ${parsedEmail.messageId}...`);
 
     await axios.post(webhookUrl, {
-      event: 'new_email',
-      mailboxId: emailData.mailbox_id,
-      email: emailData
+      client_id: mailData.email,
+      from: parsedEmail.from?.value[0]?.address,
+      to: parsedEmail.to?.value[0]?.address,
+      subject: parsedEmail.subject,
+      message_id: parsedEmail.messageId,
+      date: parsedEmail.date,
+      original_from: originalFrom,
+      text: parsedEmail.text,
+      html: parsedEmail.html
     });
 
-    log('INFO', `Notificação de webhook para o e-mail UID ${emailData.uid} enviada com sucesso.`);
+    log('INFO', `Notificação de webhook para o e-mail ${parsedEmail.messageId} enviada com sucesso.`);
   } catch (error) {
     log('ERROR', 'Falha ao enviar notificação para o webhook.', {
       errorMessage: error.message,
-      uid: emailData.uid
+      uid: parsedEmail.messageId
     });
   }
 }
@@ -77,7 +96,7 @@ async function initializeState() {
   } else {
     const { data: newStatus, error: insertError } = await supabase
       .from('mailbox_sync_status')
-      .insert({ mailbox_id: mailboxId, last_processed_uid: 0, last_synced_at: new Date().toISOString() })
+      .insert({ email: credentials.email, mailbox_id: mailboxId, last_processed_uid: 0, last_synced_at: new Date().toISOString() })
       .select()
       .single();
     if (insertError) {
@@ -173,8 +192,6 @@ function handleReady() {
 
       log('INFO', `Configuração inicial concluída. Sincronização começará a partir do UID ${syncStatus.last_processed_uid}.`);
 
-    } else {
-      syncMissingEmails();
     }
 
     log('INFO', `Iniciando verificação periódica a cada ${POLLING_INTERVAL_MS / 1000} segundos.`);
@@ -185,10 +202,10 @@ function handleReady() {
       syncMissingEmails();
     }, POLLING_INTERVAL_MS);
 
-    imapConnection.on('mail', () => {
-      log('INFO', 'Evento "mail" recebido do servidor! Sincronizando imediatamente...');
-      syncMissingEmails();
-    });
+    // imapConnection.on('mail', () => {
+    //   log('INFO', 'Evento "mail" recebido do servidor! Sincronizando imediatamente...');
+    //   syncMissingEmails();
+    // });
   });
 }
 
@@ -238,9 +255,10 @@ async function syncMissingEmails() {
             await updateLastProcessedUID(messageUID);
 
             if (savedEmailData) {
-              await sendToWebhook(savedEmailData);
+              await sendToWebhook(parsedEmail);
             }
           } catch (saveError) {
+            console.log(saveError)
             log('ERROR', `Falha ao salvar e-mail UID ${messageUID} no banco.`, { error: saveError });
           }
         });
@@ -259,6 +277,7 @@ async function syncMissingEmails() {
 
 async function saveEmailToDb(parsedEmail, uid) {
   let originalFrom = null;
+
   if (parsedEmail.headers.has('return-path')) {
     const rawReturnPath = parsedEmail.headers.get('return-path');
 
@@ -267,8 +286,11 @@ async function saveEmailToDb(parsedEmail, uid) {
     }
   }
 
+  const { data: mailData } = await supabase.from('mailboxes').select('email').eq('id', mailboxId).single();
+
   const emailData = {
     mailbox_id: mailboxId,
+    email: mailData.email,
     message_id: parsedEmail.messageId,
     uid: uid,
     sender: { address: parsedEmail.from?.value[0]?.address, name: parsedEmail.from?.value[0]?.name },
@@ -285,6 +307,7 @@ async function saveEmailToDb(parsedEmail, uid) {
   const { error } = await supabase.from('emails').insert(emailData);
 
   if (error) {
+    console.log(error)
     if (error.code === '23505') {
       log('WARN', `E-mail com Message-ID ${parsedEmail.messageId} já existe no banco. Pulando.`);
       return;
