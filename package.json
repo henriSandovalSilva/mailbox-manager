@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "api.js",
   "scripts": {
-    "start": "pm2 start ecosystenm.config.js"
+    "start": "pm2 start ecosystem.config.js"
   },
   "keywords": [],
   "author": "",
