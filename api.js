@@ -1,6 +1,5 @@
 require('dotenv').config();
 const express = require('express');
-const pm2 = require('pm2');
 const nodemailer = require('nodemailer');
 const supabase = require('./supabase.js');
 const Imap = require('node-imap');
@@ -10,51 +9,7 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-function startPm2Worker(mailbox) {
-  return new Promise((resolve, reject) => {
-    const processName = `worker-mailbox-${mailbox.id}`;
-    console.log(`Iniciando worker PM2: ${processName}`);
-
-    const config = {
-      script: './worker.js',
-      name: processName,
-      env: {
-        MAILBOX_ID: mailbox.id,
-      },
-      autorestart: true,
-      max_restarts: 5,
-    };
-
-    pm2.start(config, (err, proc) => {
-      if (err) {
-        console.error(`Erro ao iniciar o worker ${processName}:`, err);
-        return reject(err);
-      }
-      console.log(`Worker ${processName} iniciado com sucesso.`);
-      resolve(proc);
-    });
-  });
-}
-
-function stopPm2Worker(mailboxId) {
-  return new Promise((resolve, reject) => {
-    const processName = `worker-mailbox-${mailboxId}`;
-    console.log(`Parando worker PM2: ${processName}`);
-
-    pm2.delete(processName, (err) => {
-      if (err) {
-        if (err.message.includes('not found')) {
-          console.warn(`Worker ${processName} não encontrado no PM2, pode já ter sido parado.`);
-          return resolve();
-        }
-        console.error(`Erro ao parar o worker ${processName}:`, err);
-        return reject(err);
-      }
-      console.log(`Worker ${processName} parado e removido com sucesso.`);
-      resolve();
-    });
-  });
-}
+const INSTANCE_ID = process.env.INSTANCE_ID || 1;
 
 function validateImapCredentials(config) {
   return new Promise((resolve, reject) => {
@@ -79,7 +34,6 @@ function validateImapCredentials(config) {
 
     imap.once('ready', onReady);
     imap.once('error', onError);
-
     imap.connect();
   });
 }
@@ -112,12 +66,12 @@ app.get('/health/live', (req, res) => {
 
 app.get('/health/:email', async (req, res) => {
   const { email } = req.params;
-
   try {
     const { data: mailData } = await supabase.from('mailboxes').select('id').eq('email', email).single();
-
+    if (!mailData) {
+      return res.status(404).json({ status: 'not_found', message: 'Mailbox not found.' });
+    }
     const { data, error } = await supabase.from('mailbox_sync_status').select('last_synced_at').eq('mailbox_id', mailData.id).single();
-    
     if (error) throw error;
 
     const lastSyncedAt = data.last_synced_at || null;
@@ -135,7 +89,7 @@ app.get('/health/:email', async (req, res) => {
   }
 });
 
-app.get('/api/mailboxes', async (req, res) => { 
+app.get('/api/mailboxes', async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('mailboxes')
@@ -164,19 +118,21 @@ app.post('/api/mailboxes', async (req, res) => {
     await validateSmtpCredentials(req.body);
     console.log(`[VALIDAÇÃO] Credenciais SMTP para ${email} são válidas.`);
 
+    const instanceId = INSTANCE_ID;
+    console.log(`[API] Atribuindo nova mailbox para a instância fixa: ${instanceId}`);
+
+    const newMailboxData = { ...req.body, instance_id: instanceId };
+
     console.log(`[INFO] Credenciais validadas. Inserindo mailbox ${email} no banco de dados...`);
     const { data, error } = await supabase
       .from('mailboxes')
-      .insert([req.body])
+      .insert([newMailboxData])
       .select('id, email, created_at')
       .single();
 
     if (error) throw error;
 
-    console.log(`[INFO] Mailbox ${email} inserida com sucesso. Iniciando worker...`);
-    await startPm2Worker(data);
-
-    res.status(201).json({ message: 'Mailbox adicionada e validada com sucesso!', data });
+    res.status(201).json({ message: `Mailbox adicionada e atribuída à instância ${instanceId}!`, data });
 
   } catch (error) {
     if (error.code === '23505') {
@@ -195,32 +151,25 @@ app.post('/api/mailboxes', async (req, res) => {
 
 app.delete('/api/mailboxes/:email', async (req, res) => {
   const { email } = req.params;
-
   try {
-    const { data } = await supabase.from('mailboxes').select('id').eq('email', email).single();
-
-    await stopPm2Worker(data.id);
-
     const { error } = await supabase.from('mailboxes').delete().eq('email', email);
 
     if (error) throw error;
 
     res.status(204).send();
   } catch (error) {
-    res.status(500).json({ error: `Erro ao deletar mailbox ${id}`, details: error.message });
+    res.status(500).json({ error: `Erro ao deletar mailbox ${email}`, details: error.message });
   }
 });
 
 app.get('/api/mailboxes/:email/emails', async (req, res) => {
   const { email } = req.params;
-
   const page = parseInt(req.query.page, 10) || 1;
   const limit = parseInt(req.query.limit, 10) || 20;
   const offset = (page - 1) * limit;
 
   try {
     const { data: mailData } = await supabase.from('mailboxes').select('id').eq('email', email).single();
-
     const { data, error, count } = await supabase
       .from('emails')
       .select('*', { count: 'exact' })
@@ -239,7 +188,6 @@ app.get('/api/mailboxes/:email/emails', async (req, res) => {
         limit: limit
       }
     });
-
   } catch (error) {
     res.status(500).json({ error: `Erro ao buscar e-mails para a mailbox ${email}`, details: error.message });
   }
@@ -288,66 +236,15 @@ app.post('/api/send', async (req, res) => {
     }
 
     const info = await transporter.sendMail(mailOptions);
-
     console.log(`E-mail enviado: ${info.messageId}`);
     res.status(202).json({ success: true, message: 'E-mail enviado para a fila de processamento.', messageId: info.messageId });
-
   } catch (error) {
     console.error('Erro ao enviar e-mail:', error);
     res.status(500).json({ success: false, error: 'Falha ao enviar o e-mail.', details: error.message });
   }
 });
 
-async function syncWorkersOnStartup() {
-  console.log('Sincronizando workers na inicialização...');
-  try {
-    const { data: mailboxes, error } = await supabase
-      .from('mailboxes')
-      .select('*')
-      .eq('active', true);
-
-    if (error) throw error;
-
-    pm2.list((err, list) => {
-      if (err) {
-        console.error('Erro ao listar processos PM2:', err);
-        return;
-      }
-
-      const runningWorkers = new Set(list.map(proc => proc.name));
-      console.log('Workers atualmente em execução:', Array.from(runningWorkers));
-
-      for (const mailbox of mailboxes) {
-        const expectedName = `worker-mailbox-${mailbox.id}`;
-
-        if (!runningWorkers.has(expectedName)) {
-          console.warn(`Worker para a mailbox ${mailbox.id} (${mailbox.email}) não está rodando. Iniciando...`);
-          startPm2Worker(mailbox).catch(err => {
-            console.error(`Falha ao iniciar worker para mailbox ${mailbox.id} na sincronização.`, err);
-          });
-        } else {
-          console.log(`Worker para a mailbox ${mailbox.id} já está em execução.`);
-        }
-      }
-    });
-  } catch (dbError) {
-    console.error('Erro de banco de dados durante a sincronização inicial:', dbError);
-  }
-}
-
-pm2.connect(true, (err) => {
-  if (err) {
-    console.error(err);
-    process.exit(2);
-  }
-
-  app.listen(PORT, async () => {
-    console.log(`Servidor de API rodando na porta ${PORT}`);
-    await syncWorkersOnStartup();
-  });
-});
-
-process.on('SIGINT', () => {
-  pm2.disconnect();
-  process.exit(0);
+app.listen(PORT, () => {
+  console.log(`Servidor de API rodando na porta ${PORT}`);
+  console.log(`Novas mailboxes serão atribuídas à instância: ${INSTANCE_ID}`);
 });

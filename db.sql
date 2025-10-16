@@ -8,6 +8,7 @@ CREATE TABLE mailboxes (
   smtp_port INT DEFAULT 465,
   smtp_secure BOOLEAN DEFAULT TRUE,
   imap_secure BOOLEAN DEFAULT TRUE,
+  instance_id INT DEFAULT 1,
   active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );

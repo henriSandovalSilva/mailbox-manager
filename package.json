@@ -3,8 +3,7 @@
   "version": "1.0.0",
   "main": "api.js",
   "scripts": {
-    "start": "pm2 start api.js --name=\"mailbox-manager-api\"",
-    "start:prod": "pm2-runtime start api.js --name=\"mailbox-manager-api\""
+    "start": "pm2 start ecosystenm.config.js"
   },
   "keywords": [],
   "author": "",
