@@ -136,6 +136,8 @@ class MailboxManager {
     await this.updateSyncStatus({ last_synced_at: new Date().toISOString() });
 
     const lastUID = this.syncStatus.last_processed_uid;
+
+    console.log('lastUID:', lastUID);
     const searchCriteria = ['UID', `${lastUID + 1}:*`];
 
     return new Promise((resolve) => {
