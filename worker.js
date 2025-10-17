@@ -141,7 +141,7 @@ class MailboxManager {
     const searchCriteria = ['UID', `${lastUID + 1}:*`];
 
     return new Promise((resolve) => {
-      this.connection.search([searchCriteria], (err, uids) => {
+      this.connection.search(searchCriteria, (err, uids) => {
         if (err) {
           log('ERROR', 'Erro ao buscar e-mails.', { ...this.logDetails, err });
           this.isPolling = false;
