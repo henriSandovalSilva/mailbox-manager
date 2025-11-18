@@ -1,4 +1,5 @@
 require('dotenv').config();
+
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const axios = require('axios');
@@ -35,7 +36,10 @@ class MailboxManager {
 
   async initialize() {
     const { data: status, error } = await supabase
-      .from('mailbox_sync_status').select('*').eq('mailbox_id', this.credentials.id).single();
+      .from('mailbox_sync_status')
+      .select('*')
+      .eq('mailbox_id', this.credentials.id)
+      .single();
 
     if (error && error.code !== 'PGRST116') {
       log('ERROR', 'Erro ao buscar estado de sincronização.', { ...this.logDetails, error });
@@ -47,20 +51,27 @@ class MailboxManager {
     } else {
       const { data: newStatus, error: insertError } = await supabase
         .from('mailbox_sync_status')
-        .insert({ email: this.credentials.email, mailbox_id: this.credentials.id, last_processed_uid: 0 })
-        .select().single();
+        .insert({
+          email: this.credentials.email,
+          mailbox_id: this.credentials.id,
+          last_processed_uid: 0
+        })
+        .select()
+        .single();
 
       if (insertError) {
-        log('ERROR', 'Erro ao criar estado de sincronização inicial.', { ...this.logDetails, error: insertError });
+        log('ERROR', 'Erro ao criar estado inicial.', { ...this.logDetails, error: insertError });
         return false;
       }
+
       this.syncStatus = newStatus;
     }
     return true;
   }
 
   async connect() {
-    if (this.isConnecting || (this.client && !this.client.closed)) return;
+    if (this.isConnecting) return;
+    if (this.client && !this.client.closed) return;
 
     this.isConnecting = true;
     log('INFO', 'Conectando via ImapFlow...', this.logDetails);
@@ -74,27 +85,45 @@ class MailboxManager {
           user: this.credentials.email,
           pass: this.credentials.password
         },
-        logger: false
+        logger: false,
+        idling: true,
+        keepalive: {
+          idleInterval: 15000,
+          interval: 10000,
+          maxCount: 3
+        }
+      });
+
+      this.client.on('close', () => {
+        log('WARN', 'Conexão IMAP fechada inesperadamente.', this.logDetails);
+        setTimeout(() => this.connect(), RECONNECT_DELAY_MS);
       });
 
       await this.client.connect();
       await this.client.mailboxOpen('INBOX');
-      this.isConnecting = false;
 
-      log('INFO', 'Conexão IMAP estabelecida com sucesso.', this.logDetails);
+      this.isConnecting = false;
+      log('INFO', 'Conexão IMAP estabelecida.', this.logDetails);
 
       if (!this.syncStatus.initial_sync_completed_at) {
         const firstSyncTime = new Date().toISOString();
         const latestUID = this.client.mailbox.exists ? this.client.mailbox.uidNext - 1 : 0;
+
         await this.updateSyncStatus({
           initial_sync_completed_at: firstSyncTime,
           last_processed_uid: latestUID
         });
-        log('INFO', `Configuração inicial concluída. UID de partida: ${latestUID}.`, this.logDetails);
+
+        log('INFO', `Primeira sincronização concluída. Último UID: ${latestUID}.`, this.logDetails);
       }
+
     } catch (error) {
-      log('ERROR', 'Erro ao conectar com ImapFlow.', { ...this.logDetails, error: error.message });
+      log('ERROR', 'Erro ao conectar.', {
+        ...this.logDetails,
+        error: error.message
+      });
       this.isConnecting = false;
+
       if (this.client) await this.client.logout().catch(() => {});
       setTimeout(() => this.connect(), RECONNECT_DELAY_MS);
     }
@@ -102,13 +131,18 @@ class MailboxManager {
 
   async disconnect() {
     if (this.client && !this.client.closed) {
-      log('INFO', 'Desconectando ImapFlow.', this.logDetails);
+      log('INFO', 'Desconectando...', this.logDetails);
       await this.client.logout().catch(() => {});
     }
   }
 
   async pollForNewEmails() {
-    if (this.isPolling || !this.client || this.client.closed || !this.syncStatus.initial_sync_completed_at) return;
+    if (this.isPolling) return;
+    if (!this.client || this.client.closed) {
+      return this.connect();
+    }
+
+    if (!this.syncStatus.initial_sync_completed_at) return;
 
     this.isPolling = true;
     this.lastChecked = Date.now();
@@ -117,7 +151,7 @@ class MailboxManager {
     const lastUID = this.syncStatus.last_processed_uid;
     const nextUID = lastUID + 1;
 
-    log('INFO', `Verificando novos e-mails a partir do UID ${nextUID}.`, this.logDetails);
+    log('INFO', `Verificando novos e-mails desde UID ${nextUID}.`, this.logDetails);
 
     try {
       const lock = await this.client.getMailboxLock('INBOX');
@@ -127,31 +161,31 @@ class MailboxManager {
         for await (const msg of this.client.fetch({ uid: `${nextUID}:*` }, { uid: true, source: true })) {
           if (msg.uid <= lastUID) continue;
 
-          const parsedEmail = await simpleParser(msg.source);
-          const savedEmailData = await this.saveEmailToDb(parsedEmail, msg.uid);
+          const parsed = await simpleParser(msg.source);
+          const saved = await this.saveEmailToDb(parsed, msg.uid);
 
-          if (savedEmailData) {
+          if (saved) {
             await this.updateSyncStatus({ last_processed_uid: msg.uid });
-            await this.sendToWebhook(parsedEmail);
+            await this.sendToWebhook(parsed);
             processedCount++;
           }
         }
 
-        if (processedCount > 0) {
-          log('INFO', `Lote de sincronização concluído. ${processedCount} e-mail(s) novo(s).`, this.logDetails);
+        if (processedCount) {
+          log('INFO', `${processedCount} novo(s) e-mail(s).`, this.logDetails);
         } else {
-          log('INFO', 'Nenhum novo e-mail encontrado.', this.logDetails);
+          log('INFO', 'Nenhum novo e-mail.', this.logDetails);
         }
+
       } finally {
         lock.release();
       }
     } catch (err) {
-      log('ERROR', 'Erro ao buscar novos e-mails com ImapFlow.', { ...this.logDetails, error: err.message });
-      if (err.code === 'AUTHENTICATIONFAILED') {
-        managedMailboxes.delete(this.credentials.id);
-      }
+      log('ERROR', 'Erro ao buscar e-mails.', { ...this.logDetails, error: err.message });
+
       await this.disconnect();
       setTimeout(() => this.connect(), RECONNECT_DELAY_MS);
+
     } finally {
       this.isPolling = false;
     }
@@ -169,7 +203,10 @@ class MailboxManager {
       email: this.credentials.email,
       message_id: parsedEmail.messageId,
       uid,
-      sender: { address: parsedEmail.from?.value[0]?.address, name: parsedEmail.from?.value[0]?.name },
+      sender: {
+        address: parsedEmail.from?.value[0]?.address,
+        name: parsedEmail.from?.value[0]?.name
+      },
       recipients: parsedEmail.to?.value,
       subject: parsedEmail.subject,
       body_text: parsedEmail.text,
@@ -184,7 +221,7 @@ class MailboxManager {
 
     if (error) {
       if (error.code === '23505') {
-        log('WARN', `E-mail duplicado (Message-ID: ${parsedEmail.messageId}). Pulando.`, this.logDetails);
+        log('WARN', `E-mail duplicado (id: ${parsedEmail.messageId}).`, this.logDetails);
         return null;
       }
       throw error;
@@ -215,9 +252,11 @@ class MailboxManager {
         text: parsedEmail.text,
         html: parsedEmail.html
       });
-      log('INFO', `Webhook enviado: ${parsedEmail.messageId}`, this.logDetails);
+
+      log('INFO', `Webhook enviado (${parsedEmail.messageId}).`, this.logDetails);
+
     } catch (error) {
-      log('ERROR', `Falha ao enviar webhook: ${parsedEmail.messageId}`, { ...this.logDetails, error: error.message });
+      log('ERROR', 'Falha ao enviar webhook.', { ...this.logDetails, error: error.message });
     }
   }
 
@@ -236,7 +275,8 @@ class MailboxManager {
 }
 
 async function reconcileAndManageMailboxes() {
-  log('INFO', 'Iniciando loop de reconciliação de mailboxes...');
+  log('INFO', 'Reconciliação de mailboxes...');
+
   try {
     const { data: assignedMailboxes, error } = await supabase
       .from('mailboxes')
@@ -245,7 +285,7 @@ async function reconcileAndManageMailboxes() {
       .eq('instance_id', INSTANCE_ID);
 
     if (error) {
-      log('ERROR', 'Falha ao buscar mailboxes.', { error });
+      log('ERROR', 'Falha ao buscar mailboxes', { error });
       return;
     }
 
@@ -253,24 +293,28 @@ async function reconcileAndManageMailboxes() {
 
     for (const mailboxCredentials of assignedMailboxes) {
       if (!managedMailboxes.has(mailboxCredentials.id)) {
-        log('INFO', `Nova mailbox detectada: ${mailboxCredentials.email}.`, { mailboxId: mailboxCredentials.id });
+        log('INFO', `Nova mailbox: ${mailboxCredentials.email}.`, { mailboxId: mailboxCredentials.id });
+
         const manager = new MailboxManager(mailboxCredentials);
         managedMailboxes.set(mailboxCredentials.id, manager);
-        const initialized = await manager.initialize();
-        if (initialized) await manager.connect();
+
+        const ok = await manager.initialize();
+        if (ok) await manager.connect();
       }
     }
 
     for (const mailboxId of managedMailboxes.keys()) {
       if (!dbMailboxIds.has(mailboxId)) {
-        log('INFO', `Removendo mailbox não mais atribuída.`, { mailboxId });
+        log('INFO', 'Removendo mailbox desativada.', { mailboxId });
+
         const manager = managedMailboxes.get(mailboxId);
         await manager.disconnect();
         managedMailboxes.delete(mailboxId);
       }
     }
+
   } catch (e) {
-    log('ERROR', 'Erro crítico no loop de reconciliação.', { error: e.message });
+    log('ERROR', 'Erro na reconciliação.', { error: e.message });
   }
 }
 
@@ -284,15 +328,19 @@ function pollManagedMailboxes() {
 
 async function main() {
   log('INFO', 'Iniciando Multi-Worker (ImapFlow)...');
+
   await reconcileAndManageMailboxes();
+
   setInterval(reconcileAndManageMailboxes, RECONCILE_INTERVAL_MS);
   setInterval(pollManagedMailboxes, 5000);
 
   process.on('SIGINT', async () => {
-    log('INFO', 'Encerrando todas as conexões...');
+    log('INFO', 'Encerrando conexões...');
+
     for (const manager of managedMailboxes.values()) {
       await manager.disconnect();
     }
+
     setTimeout(() => process.exit(0), 2000);
   });
 }
