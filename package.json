@@ -5,8 +5,8 @@
   "scripts": {
     "start": "pm2 start api.js --name=\"mailbox-manager-api\"",
     "start:prod": "pm2-runtime start api.js --name=\"mailbox-manager-api\"",
-    "start-worker": "pm2 start worker.js --name=\"mailbox-manager-worker\"",
-    "start-worker:prod": "pm2-runtime start worker.js --name=\"mailbox-manager-worker\""
+    "start-worker": "pm2 start worker.js --name=\"mailbox-manager-worker\" --cron-restart=\"0,30 * * * *\"",
+    "start-worker:prod": "pm2-runtime start worker.js --name=\"mailbox-manager-worker\" --cron-restart=\"0,30 * * * *\""
   },
   "keywords": [],
   "author": "",
